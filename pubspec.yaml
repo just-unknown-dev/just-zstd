@@ -1,0 +1,17 @@
+name: just_zstd
+description: A pure Dart implementation of the Zstandard (RFC 8878) decompression algorithm. Lightweight, dependency-free decoder for zstd compressed data.
+version: 0.1.0
+homepage: https://github.com/just-unknown-dev/just-zstd
+repository: https://github.com/just-unknown-dev/just-zstd
+issue_tracker: https://github.com/just-unknown-dev/just-zstd/issues
+
+environment:
+  sdk: ^3.11.0
+
+# Add regular dependencies here.
+dependencies:
+  # path: ^1.9.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6
