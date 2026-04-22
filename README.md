@@ -1,16 +1,16 @@
 # Just Zstd
 
-A pure Dart implementation of the Zstandard (RFC 8878) decompression algorithm.
+A pure Dart implementation of the Zstandard (RFC 8878) codec.
 
-This package provides a lightweight, dependency-free decoder for Zstandard (zstd) compressed data, making it suitable for environments where native or FFI-based Zstandard implementations are unavailable or difficult to integrate (such as certain Flutter web scenarios or isolated Dart scripts).
+This package provides a lightweight, dependency-free encoder and decoder for Zstandard (zstd) compressed data, making it suitable for environments where native or FFI-based Zstandard implementations are unavailable or difficult to integrate (such as certain Flutter web scenarios or isolated Dart scripts).
 
-It was originally built for the `just_tiled` package to decompress TMX map layers.
+It was originally built for the `just_tiled` package to decompress TMX map layers, and has been extended with encoding support.
 
 ## Features
 
 - Pure Dart implementation (no `dart:ffi` or native extensions required)
-- Supports decoding Zstandard frames and blocks
-- Handles both raw and compressed blocks
+- Encoding support: create Zstandard frames with raw-block compression
+- Decoding support: decompress Zstandard frames and blocks, including raw and compressed blocks
 
 ## Getting started
 
@@ -18,10 +18,12 @@ Add `just_zstd` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  just_zstd: ^1.0.0
+  just_zstd: ^0.2.0
 ```
 
 ## Usage
+
+### Decoding
 
 ```dart
 import 'dart:typed_data';
@@ -45,6 +47,28 @@ void main() {
   } on FormatException catch (e) {
     print('Invalid Zstandard data: $e');
   }
+}
+```
+
+### Encoding
+
+```dart
+import 'dart:typed_data';
+import 'package:just_zstd/just_zstd.dart';
+
+void main() {
+  final rawData = Uint8List.fromList([1, 2, 3, 4, 5]);
+  
+  const encoder = ZstdEncoder();
+  final compressed = encoder.encodeBytes(rawData);
+  
+  print('Encoded ${rawData.length} bytes to ${compressed.length} bytes.');
+  
+  // Verify with decoder
+  const decoder = ZstdDecoder();
+  final decompressed = decoder.decodeBytes(compressed);
+  
+  print('Round-trip successful: ${decompressed.toString() == rawData.toString()}');
 }
 ```
 

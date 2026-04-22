@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0] - 2026-04-22
+
+### Added
+
+- **ZstdEncoder** — Zstandard frame encoder producing raw (uncompressed) blocks.
+  - `encode(List<int>)` and `encodeBytes(Uint8List)` for creating valid Zstandard frames.
+  - Frame header generation: magic number, frame descriptor, content size, and block headers.
+  - Raw block encoding for O(n) performance with minimal overhead.
+  - Output is fully compatible with `ZstdDecoder`.
+
 ## [0.1.0] - 2026-03-15
 
 ### Added

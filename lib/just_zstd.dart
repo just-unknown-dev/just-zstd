@@ -11,6 +11,7 @@
 library;
 
 export 'src/zstd_decoder.dart';
+export 'src/zstd_encoder.dart';
 export 'src/bit_reader.dart';
 export 'src/fse_table.dart';
 export 'src/huffman_table.dart';
