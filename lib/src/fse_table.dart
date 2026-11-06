@@ -1,199 +1,143 @@
-/// Finite State Entropy (FSE) table builder and decoder.
+/// Finite State Entropy decoding tables (RFC 8878 §4.1.1): what literal
+/// lengths, match lengths, offsets and Huffman weights are coded with.
 ///
-/// FSE is the entropy coding scheme used by Zstandard for encoding
-/// literal lengths, match lengths, and offset codes. This implements
-/// the tANS (table-based Asymmetric Numeral Systems) variant.
+/// Internal: not exported.
+library;
 
-import 'bit_reader.dart';
+import 'dart:typed_data';
 
-/// A single entry in the FSE decoding table.
-class FseEntry {
-  /// The symbol this entry decodes to.
-  final int symbol;
+import 'bit_readers.dart';
 
-  /// Number of bits to read for the next state.
-  final int bitsToRead;
+/// An FSE decoding table: for each state, the symbol it stands for, and
+/// how the next state is read (that many bits, added to a base).
+final class FseTable {
+  FseTable._(this.accuracyLog, this.symbols, this.bits, this.bases);
 
-  /// Base value to add the read bits to for computing the next state.
-  final int baseline;
+  /// A table of `1 << accuracyLog` states from [counts], the normalized
+  /// count of each symbol from 0 up: -1 for "less than 1", which takes one
+  /// state at the end of the table.
+  ///
+  /// Throws [FormatException] when the counts don't fill the table exactly.
+  factory FseTable.fromCounts(List<int> counts, int accuracyLog) {
+    final size = 1 << accuracyLog;
+    final symbols = Uint8List(size);
+    final bits = Uint8List(size);
+    final bases = Uint16List(size);
+    final next = List<int>.filled(counts.length, 0);
 
-  const FseEntry({
-    required this.symbol,
-    required this.bitsToRead,
-    required this.baseline,
-  });
-}
+    // "Less than 1" symbols take a state each, from the end.
+    var high = size;
+    for (var s = 0; s < counts.length; s++) {
+      if (counts[s] == -1) {
+        if (high == 0) throw _corrupt;
+        symbols[--high] = s;
+        next[s] = 1;
+      }
+    }
 
-/// FSE decoding table.
-class FseTable {
-  /// The decoding table entries, indexed by state.
-  final List<FseEntry> entries;
+    // The others are spread over the rest, skipping those states.
+    final step = (size >> 1) + (size >> 3) + 3;
+    final mask = size - 1;
+    var position = 0;
+    var placed = 0;
+    for (var s = 0; s < counts.length; s++) {
+      final count = counts[s];
+      if (count <= 0) continue;
+      next[s] = count;
+      for (var i = 0; i < count; i++) {
+        if (++placed > high) throw _corrupt;
+        symbols[position] = s;
+        do {
+          position = (position + step) & mask;
+        } while (position >= high);
+      }
+    }
+    if (position != 0 || placed != high) throw _corrupt;
 
-  /// The accuracy log (log2 of table size).
+    // Each state of a symbol reads enough bits to reach the next one.
+    for (var state = 0; state < size; state++) {
+      final symbol = symbols[state];
+      final n = next[symbol]++;
+      final b = accuracyLog - highBit(n);
+      bits[state] = b;
+      bases[state] = (n << b) - size;
+    }
+    return FseTable._(accuracyLog, symbols, bits, bases);
+  }
+
+  /// A table of one state, which always stands for [symbol] and reads no
+  /// bits: a sequence field in RLE mode.
+  factory FseTable.rle(int symbol) =>
+      FseTable._(0, Uint8List(1)..[0] = symbol, Uint8List(1), Uint16List(1));
+
+  /// Reads an FSE table description (RFC 8878 §4.1.1) from [reader] and
+  /// builds its table. The reader is left after the description, which
+  /// takes whole bytes.
+  ///
+  /// Throws [FormatException] when the description is damaged, its
+  /// accuracy log is over [maxAccuracyLog], or it counts symbols past
+  /// [maxSymbol].
+  factory FseTable.read(
+    ForwardBitReader reader, {
+    required int maxAccuracyLog,
+    required int maxSymbol,
+  }) {
+    final accuracyLog = reader.read(4) + 5;
+    if (accuracyLog > maxAccuracyLog) {
+      throw FormatException(
+        'zstd: FSE accuracy log $accuracyLog is over $maxAccuracyLog',
+      );
+    }
+    var remaining = 1 << accuracyLog;
+    final counts = <int>[];
+    while (remaining > 0) {
+      if (counts.length > maxSymbol) throw _tooManySymbols;
+      // Values 0 to remaining + 1 are possible: the small ones take a bit
+      // less than the rest.
+      final bits = highBit(remaining + 1) + 1;
+      final lowMask = (1 << (bits - 1)) - 1;
+      final threshold = (1 << bits) - 1 - (remaining + 1);
+      var value = reader.peek(bits);
+      if ((value & lowMask) < threshold) {
+        value &= lowMask;
+        reader.skip(bits - 1);
+      } else {
+        if (value > lowMask) value -= threshold;
+        reader.skip(bits);
+      }
+      final count = value - 1;
+      remaining -= count < 0 ? -count : count;
+      counts.add(count);
+      if (count == 0) {
+        // Two-bit flags say how many more zeros follow; 3 means "and more".
+        int repeat;
+        do {
+          repeat = reader.read(2);
+          for (var i = 0; i < repeat; i++) {
+            counts.add(0);
+          }
+        } while (repeat == 3);
+        if (counts.length > maxSymbol + 1) throw _tooManySymbols;
+      }
+    }
+    if (remaining != 0) throw _corrupt;
+    return FseTable.fromCounts(counts, accuracyLog);
+  }
+
+  /// The log2 of the number of states.
   final int accuracyLog;
 
-  /// Table size = 1 << accuracyLog.
-  int get tableSize => 1 << accuracyLog;
+  /// The symbol each state stands for.
+  final Uint8List symbols;
 
-  const FseTable({required this.entries, required this.accuracyLog});
+  /// How many bits each state reads for the next state.
+  final Uint8List bits;
 
-  /// Build an FSE decoding table from a normalized probability distribution.
-  ///
-  /// [normalizedProbs] maps symbol → probability count.
-  /// Sum of probabilities must equal `1 << accuracyLog`.
-  /// Probabilities of -1 indicate "less than 1" symbols.
-  factory FseTable.build(
-    Map<int, int> normalizedProbs,
-    int accuracyLog,
-  ) {
-    final tableSize = 1 << accuracyLog;
-    final tableMask = tableSize - 1;
-    final step = (tableSize >> 1) + (tableSize >> 3) + 3;
+  /// What each state adds those bits to.
+  final Uint16List bases;
 
-    // Allocate symbol table (maps position → symbol)
-    final symbolTable = List<int>.filled(tableSize, 0);
-
-    // Distribute "less than 1" probability symbols first
-    int highThreshold = tableSize - 1;
-    for (final entry in normalizedProbs.entries) {
-      if (entry.value == -1) {
-        symbolTable[highThreshold] = entry.key;
-        highThreshold--;
-      }
-    }
-
-    // Distribute remaining symbols using the stepping algorithm
-    int position = 0;
-    for (final entry in normalizedProbs.entries) {
-      final symbol = entry.key;
-      final prob = entry.value;
-      if (prob <= 0) continue; // skip "less than 1" (-1) and zero
-
-      for (int i = 0; i < prob; i++) {
-        symbolTable[position] = symbol;
-        // Advance position, skipping occupied high-threshold slots
-        do {
-          position = (position + step) & tableMask;
-        } while (position > highThreshold);
-      }
-    }
-
-    // Build the actual decoding entries
-    final entries = List<FseEntry>.filled(
-      tableSize,
-      const FseEntry(symbol: 0, bitsToRead: 0, baseline: 0),
-    );
-
-    // Cumulative occurrences per symbol
-    final cumulativeOccurrences = <int, int>{};
-    for (final entry in normalizedProbs.entries) {
-      final prob = entry.value;
-      cumulativeOccurrences[entry.key] = prob <= 0 ? (prob == -1 ? 1 : 0) : prob;
-    }
-
-    final nextState = <int, int>{};
-    for (final entry in normalizedProbs.entries) {
-      final prob = entry.value;
-      final effectiveProb = prob == -1 ? 1 : (prob <= 0 ? 0 : prob);
-      // Smallest power-of-2 >= effectiveProb
-      if (effectiveProb > 0) {
-        nextState[entry.key] = effectiveProb;
-      }
-    }
-
-    for (int i = 0; i < tableSize; i++) {
-      final symbol = symbolTable[i];
-      final prob = normalizedProbs[symbol] ?? 0;
-      final effectiveProb = prob == -1 ? 1 : (prob <= 0 ? 0 : prob);
-
-      if (effectiveProb == 0) continue;
-
-      // Number of bits: accuracyLog - floor(log2(effectiveProb))
-      final stateIndex = nextState[symbol]!;
-      final highBit = _highBit(stateIndex);
-      final bitsToRead = accuracyLog - highBit;
-      final baseline = (stateIndex << bitsToRead) - tableSize;
-
-      entries[i] = FseEntry(
-        symbol: symbol,
-        bitsToRead: bitsToRead,
-        baseline: baseline < 0 ? 0 : baseline,
-      );
-
-      nextState[symbol] = stateIndex + 1;
-    }
-
-    return FseTable(entries: entries, accuracyLog: accuracyLog);
-  }
-
-  /// Decode a single symbol from the bit stream, updating [state] in place.
-  ///
-  /// Returns the decoded symbol.
-  int decode(BitReader reader, List<int> stateHolder) {
-    final entry = entries[stateHolder[0]];
-    final symbol = entry.symbol;
-    final bits = reader.readBits(entry.bitsToRead);
-    stateHolder[0] = entry.baseline + bits;
-    return symbol;
-  }
-
-  /// Read the normalized distribution from a compressed header.
-  ///
-  /// Returns `{symbol: probability}` map and consumes bytes from [reader].
-  static (Map<int, int>, int) readNormalizedDistribution(
-    BitReader reader,
-    int maxSymbol,
-  ) {
-    final accuracyLog = 5 + reader.readBits(4);
-    final tableSize = 1 << accuracyLog;
-    int remaining = tableSize;
-    final probs = <int, int>{};
-    int symbol = 0;
-
-    while (remaining > 0 && symbol <= maxSymbol) {
-      // Determine number of bits to read
-      final threshold = _highBit(remaining + 1) + 1;
-      final lowBits = threshold - 1;
-      int value = reader.readBits(lowBits);
-
-      if (value < (1 << threshold) - 1 - remaining) {
-        // value is correct as-is
-      } else {
-        value = (value << 1) | reader.readBit();
-        if (value >= (1 << threshold) - 1) {
-          value -= (1 << threshold) - 1 - remaining;
-        }
-      }
-
-      final prob = value - 1; // -1 means "less-than-1"
-      if (prob == 0) {
-        // Repeat zeros
-        // This symbol gets probability 0 (not present)
-        probs[symbol] = 0;
-        symbol++;
-        continue;
-      }
-
-      probs[symbol] = prob;
-      if (prob > 0) {
-        remaining -= prob;
-      } else {
-        remaining -= 1; // prob == -1, uses 1 slot
-      }
-      symbol++;
-    }
-
-    reader.alignToByte();
-    return (probs, accuracyLog);
-  }
-}
-
-/// Return floor(log2(x)). x must be > 0.
-int _highBit(int x) {
-  if (x <= 0) return 0;
-  int bits = 0;
-  while ((1 << (bits + 1)) <= x) {
-    bits++;
-  }
-  return bits;
+  static const _corrupt = FormatException('zstd: damaged FSE table');
+  static const _tooManySymbols = FormatException(
+    'zstd: FSE table describes too many symbols',
+  );
 }

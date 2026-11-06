@@ -1,160 +1,188 @@
-/// Huffman decoding table for Zstandard literal decompression.
+/// Huffman decoding of compressed literals (RFC 8878 §4.2).
 ///
-/// Zstandard uses canonical Huffman coding for the literals section
-/// of compressed blocks. This implements both weight-based and
-/// direct table-based decoding.
+/// Internal: not exported.
+library;
 
-import 'bit_reader.dart';
+import 'dart:typed_data';
+
+import 'bit_readers.dart';
 import 'fse_table.dart';
 
-/// A single entry in the Huffman decoding table.
-class HuffmanEntry {
-  /// The decoded symbol (byte value 0–255).
-  final int symbol;
+/// A Huffman decoding table: indexed by the next [maxBits] bits of a
+/// stream, the symbol they start with and how many of them its code takes.
+final class HuffmanTable {
+  HuffmanTable._(this.maxBits, this.symbols, this.bits);
 
-  /// Number of bits consumed from the stream for this symbol.
-  final int numberOfBits;
+  /// Reads a Huffman tree description (RFC 8878 §4.2.1) from bytes
+  /// [start] to [end] of [data]. Returns the table and how many bytes the
+  /// description took.
+  ///
+  /// Throws [FormatException] when the description is damaged.
+  static (HuffmanTable, int) read(Uint8List data, int start, int end) {
+    if (start >= end) throw _truncated;
+    final header = data[start];
+    final weights = Uint8List(_maxSymbols);
+    int count;
+    int length;
+    if (header >= 128) {
+      // Weights written directly, four bits each.
+      count = header - 127;
+      length = 1 + ((count + 1) >> 1);
+      if (start + length > end) throw _truncated;
+      for (var i = 0; i < count; i++) {
+        final byte = data[start + 1 + (i >> 1)];
+        weights[i] = i.isEven ? byte >> 4 : byte & 0xF;
+      }
+    } else {
+      // Weights compressed with FSE: two states take turns.
+      length = 1 + header;
+      if (header == 0 || start + length > end) throw _truncated;
+      final streamEnd = start + length;
+      final description = ForwardBitReader(data, start + 1, streamEnd);
+      final table = FseTable.read(
+        description,
+        maxAccuracyLog: 6,
+        maxSymbol: 255,
+      );
+      final stream = BackwardBitReader(data, description.nextByte, streamEnd);
+      count = _readWeights(table, stream, weights);
+    }
+    return (HuffmanTable._fromWeights(weights, count), length);
+  }
 
-  const HuffmanEntry({required this.symbol, required this.numberOfBits});
-}
+  /// Decodes FSE-compressed weights into [weights]; returns how many.
+  static int _readWeights(
+    FseTable table,
+    BackwardBitReader stream,
+    Uint8List weights,
+  ) {
+    var count = 0;
+    // At most 255 weights are written: the last symbol's is worked out.
+    void add(int weight) {
+      if (count >= _maxSymbols - 1) throw _corrupt;
+      weights[count++] = weight;
+    }
 
-/// Huffman decoding table.
-class HuffmanTable {
-  /// Maximum number of bits for any code (table accuracy log).
+    var state1 = stream.read(table.accuracyLog);
+    var state2 = stream.read(table.accuracyLog);
+    // Until the stream runs out: the state that overran gives no more
+    // symbols, the other gives its last.
+    while (true) {
+      add(table.symbols[state1]);
+      state1 = table.bases[state1] + stream.read(table.bits[state1]);
+      if (stream.overflowed) {
+        add(table.symbols[state2]);
+        return count;
+      }
+      add(table.symbols[state2]);
+      state2 = table.bases[state2] + stream.read(table.bits[state2]);
+      if (stream.overflowed) {
+        add(table.symbols[state1]);
+        return count;
+      }
+    }
+  }
+
+  /// The canonical table for [count] symbols' [weights]; the last symbol's
+  /// weight is the one that makes the code lengths complete.
+  factory HuffmanTable._fromWeights(Uint8List weights, int count) {
+    var total = 0;
+    for (var i = 0; i < count; i++) {
+      final w = weights[i];
+      if (w > _maxBitsLimit) throw _corrupt;
+      if (w > 0) total += 1 << (w - 1);
+    }
+    if (total == 0) throw _corrupt;
+    final maxBits = highBit(total) + 1;
+    if (maxBits > _maxBitsLimit) throw _corrupt;
+    final leftOver = (1 << maxBits) - total;
+    if (leftOver & (leftOver - 1) != 0) throw _corrupt;
+    weights[count] = highBit(leftOver) + 1;
+    final symbolCount = count + 1;
+
+    // Code lengths, and how many codes of each length.
+    final lengths = Uint8List(symbolCount);
+    final perLength = List<int>.filled(_maxBitsLimit + 1, 0);
+    for (var s = 0; s < symbolCount; s++) {
+      final w = weights[s];
+      if (w == 0) continue;
+      final length = maxBits + 1 - w;
+      lengths[s] = length;
+      perLength[length]++;
+    }
+
+    // The longest codes take the lowest table indices; within a length,
+    // symbols keep their order.
+    final size = 1 << maxBits;
+    final symbols = Uint8List(size);
+    final bits = Uint8List(size);
+    final next = List<int>.filled(_maxBitsLimit + 2, 0);
+    for (var length = maxBits; length >= 1; length--) {
+      next[length - 1] =
+          next[length] + perLength[length] * (1 << (maxBits - length));
+    }
+    if (next[0] != size) throw _corrupt;
+    for (var length = maxBits; length >= 1; length--) {
+      bits.fillRange(next[length], next[length - 1], length);
+    }
+    for (var s = 0; s < symbolCount; s++) {
+      final length = lengths[s];
+      if (length == 0) continue;
+      final span = 1 << (maxBits - length);
+      final at = next[length];
+      symbols.fillRange(at, at + span, s);
+      next[length] = at + span;
+    }
+    return HuffmanTable._(maxBits, symbols, bits);
+  }
+
+  /// The longest code's length: how many bits index the table.
   final int maxBits;
 
-  /// Decoding table entries, indexed by bit pattern.
-  final List<HuffmanEntry> entries;
+  /// The symbol a code starting with each [maxBits]-bit index stands for.
+  final Uint8List symbols;
 
-  /// Table size = 1 << maxBits.
-  int get tableSize => 1 << maxBits;
+  /// How many bits that code takes.
+  final Uint8List bits;
 
-  const HuffmanTable({required this.maxBits, required this.entries});
-
-  /// Build a Huffman decoding table from symbol weights.
+  /// Decodes [count] symbols from the stream in bytes [start] to [end] of
+  /// [data] into [out], from [at].
   ///
-  /// [weights] is a list of weights for symbols 0..N-1.
-  /// Weight 0 means the symbol is not present. Weight w means
-  /// the symbol has numberOfBits = (maxBits + 1 - w).
-  factory HuffmanTable.fromWeights(List<int> weights) {
-    // Determine max weight
-    int maxWeight = 0;
-    for (final w in weights) {
-      if (w > maxWeight) maxWeight = w;
+  /// Throws [FormatException] unless the stream ends exactly with the last
+  /// symbol.
+  void decode(
+    Uint8List data,
+    int start,
+    int end,
+    Uint8List out,
+    int at,
+    int count,
+  ) {
+    final stream = BackwardBitReader(data, start, end);
+    final mask = (1 << maxBits) - 1;
+    var state = stream.read(maxBits);
+    for (var i = 0; i < count; i++) {
+      out[at + i] = symbols[state];
+      final n = bits[state];
+      state = ((state << n) | stream.read(n)) & mask;
     }
-
-    if (maxWeight == 0) {
-      return const HuffmanTable(maxBits: 1, entries: []);
-    }
-
-    // Calculate sum of (1 << (w-1)) for all w > 0 to derive maxBits
-    int weightSum = 0;
-    for (final w in weights) {
-      if (w > 0) {
-        weightSum += 1 << (w - 1);
-      }
-    }
-
-    // maxBits is such that 1 << maxBits = next power of 2 >= weightSum
-    int maxBits = 1;
-    while ((1 << maxBits) < weightSum) {
-      maxBits++;
-    }
-
-    // Last symbol weight fills the remainder
-    final tableSize = 1 << maxBits;
-
-    // Build the decoding table
-    final entries = List<HuffmanEntry>.filled(
-      tableSize,
-      const HuffmanEntry(symbol: 0, numberOfBits: 0),
-    );
-
-    // Calculate number of bits for each symbol
-    final symbolBits = <int, int>{};
-    for (int i = 0; i < weights.length; i++) {
-      if (weights[i] > 0) {
-        symbolBits[i] = maxBits + 1 - weights[i];
-      }
-    }
-
-    // Fill the table — each symbol occupies (tableSize >> numberOfBits) entries
-    int pos = 0;
-    // Sort by number of bits (longest first for canonical ordering)
-    final sortedSymbols = symbolBits.keys.toList()
-      ..sort((a, b) => symbolBits[b]!.compareTo(symbolBits[a]!));
-
-    for (final symbol in sortedSymbols) {
-      final bits = symbolBits[symbol]!;
-      final span = tableSize >> bits;
-      for (int i = 0; i < span; i++) {
-        if (pos + i < tableSize) {
-          entries[pos + i] = HuffmanEntry(symbol: symbol, numberOfBits: bits);
-        }
-      }
-      pos += span;
-    }
-
-    return HuffmanTable(maxBits: maxBits, entries: entries);
-  }
-
-  /// Read a Huffman table description from a compressed header.
-  ///
-  /// Returns the weights for symbols 0..N. The header format is either
-  /// FSE-compressed or direct (based on header byte).
-  static List<int> readWeights(BitReader reader) {
-    final headerByte = reader.readByte();
-
-    if (headerByte < 128) {
-      // FSE-compressed weights
-      final compressedSize = headerByte;
-      final startPos = reader.bytePosition;
-
-      // Read FSE distribution for weight values
-      final (probs, accuracyLog) =
-          FseTable.readNormalizedDistribution(reader, 12);
-      final fseTable = FseTable.build(probs, accuracyLog);
-
-      // Decode weights using FSE
-      final weights = <int>[];
-      final state = [reader.readBits(accuracyLog)];
-
-      // Read until we've consumed compressedSize bytes
-      while (reader.bytePosition - startPos < compressedSize) {
-        if (reader.remainingBits < 1) break;
-        weights.add(fseTable.decode(reader, state));
-        if (weights.length > 255) break;
-      }
-
-      reader.alignToByte();
-      return weights;
-    } else {
-      // Direct representation
-      final numSymbols = headerByte - 127;
-      final weights = <int>[];
-
-      for (int i = 0; i < numSymbols; i += 2) {
-        final byte = reader.readByte();
-        weights.add(byte >> 4);
-        if (i + 1 < numSymbols) {
-          weights.add(byte & 0xF);
-        }
-      }
-
-      return weights;
+    // The state was read maxBits ahead: those bits come from before the
+    // start, and nothing else may be left.
+    if (stream.position != -maxBits) {
+      throw const FormatException(
+        'zstd: Huffman stream does not end with its last literal',
+      );
     }
   }
 
-  /// Decode a single symbol from the bit stream (MSB-first reads).
-  int decode(BitReader reader) {
-    // Read maxBits bits to index the table
-    final index = reader.readBits(maxBits);
-    final entry = entries[index];
-    // Put back unused bits
-    if (entry.numberOfBits < maxBits) {
-      // We over-read; this is handled by the table construction
-      // (each entry knows how many bits it actually consumed)
-    }
-    return entry.symbol;
-  }
+  /// At most 256 symbols: every byte value.
+  static const _maxSymbols = 256;
+
+  /// The longest code the format allows.
+  static const _maxBitsLimit = 12;
+
+  static const _truncated = FormatException(
+    'zstd: truncated Huffman tree description',
+  );
+  static const _corrupt = FormatException('zstd: damaged Huffman tree');
 }

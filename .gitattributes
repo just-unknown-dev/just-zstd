@@ -1,0 +1,2 @@
+# Zstandard frames made by libzstd: bytes, never line endings.
+*.zst binary

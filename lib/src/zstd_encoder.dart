@@ -1,13 +1,9 @@
 /// Zstandard (RFC 8878) frame encoder — raw-block implementation.
 ///
-/// Produces valid Zstandard frames decodable by [ZstdDecoder].
+/// Produces valid Zstandard frames, which any Zstandard decoder reads.
 /// Blocks are stored as raw (uncompressed) blocks. This means the output
-/// is larger than the input by a fixed overhead (~9 bytes), but encoding
-/// is O(n) and requires no entropy-coding tables.
-///
-/// Compression via FSE/Huffman blocks may be added in a future version
-/// without changing the `.jgee` binary format (the compression-flag byte
-/// in the section header handles the distinction).
+/// is larger than the input by a fixed overhead (9 bytes, plus 3 per
+/// 128 KiB), but encoding is O(n) and requires no entropy-coding tables.
 library;
 
 import 'dart:typed_data';
@@ -15,29 +11,31 @@ import 'dart:typed_data';
 /// Magic number for Zstandard frames (0xFD2FB528, little-endian).
 const int _zstdMagic = 0xFD2FB528;
 
-/// Maximum raw-block payload size per the Zstandard spec (2^17 - 1 = 131071).
+/// The largest raw block written: one byte under the format's 128 KiB.
 const int _maxBlockSize = 131071;
 
 /// Block type identifier for raw blocks.
 const int _blockTypeRaw = 0;
 
-/// Zstandard frame encoder (raw-block mode).
+/// Zstandard frame encoder (raw-block mode): a valid frame, not a smaller
+/// one.
 ///
 /// Usage:
 /// ```dart
-/// final encoder = ZstdEncoder();
-/// final compressed = encoder.encode(rawBytes);
+/// const encoder = ZstdEncoder();
+/// final frame = encoder.encode(rawBytes);
 /// // Decompress with:
-/// final decoder = ZstdDecoder();
-/// final original = decoder.decodeBytes(compressed);
+/// const decoder = ZstdDecoder();
+/// final original = decoder.decode(frame);
 /// ```
 class ZstdEncoder {
+  /// An encoder. Stateless; one instance can be shared.
   const ZstdEncoder();
 
   /// Encode [input] as a Zstandard frame containing raw (uncompressed) blocks.
   ///
-  /// The returned [Uint8List] is a complete, valid Zstandard frame that can be
-  /// decoded by [ZstdDecoder.decodeBytes].
+  /// The returned [Uint8List] is a complete, valid Zstandard frame, with
+  /// the content size in its header and no checksum.
   Uint8List encode(List<int> input) {
     final contentSize = input.length;
 
@@ -69,13 +67,14 @@ class ZstdEncoder {
     // Frame Header Descriptor:
     //   Bits 7-6 (FCS_Flag)       = 2  → 4-byte Frame_Content_Size
     //   Bit  5   (Single_Segment) = 1  → no Window_Descriptor
-    //   Bit  4   (reserved)       = 0
+    //   Bit  4   (unused)         = 0
     //   Bit  3   (reserved)       = 0
     //   Bit  2   (Checksum_Flag)  = 0  → no content checksum
     //   Bits 1-0 (Dict_ID_Flag)   = 0  → no dictionary
     //
-    // Encoding: (2 << 6) | (1 << 5) = 0x40 | 0x20 = 0x60
-    out.setUint8(pos, 0x60);
+    // Encoding: (2 << 6) | (1 << 5) = 0x80 | 0x20 = 0xA0. (0.2.0 wrote
+    // 0x60, which says a 2-byte size, before the 4 bytes it wrote.)
+    out.setUint8(pos, 0xA0);
     pos += 1;
 
     // Frame_Content_Size — 4 bytes LE (because FCS_Flag == 2).
@@ -112,7 +111,4 @@ class ZstdEncoder {
 
     return out.buffer.asUint8List(0, pos);
   }
-
-  /// Encode a [Uint8List] directly.
-  Uint8List encodeBytes(Uint8List input) => encode(input);
 }

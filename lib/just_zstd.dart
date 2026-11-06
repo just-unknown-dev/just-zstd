@@ -1,17 +1,14 @@
-/// Pure Dart Zstandard (RFC 8878) decompression.
-///
-/// Provides [ZstdDecoder] for decompressing Zstandard-compressed data.
+/// Pure Dart Zstandard (RFC 8878): [ZstdDecoder] reads any Zstandard data
+/// that needs no dictionary; [ZstdEncoder] writes valid, uncompressed
+/// frames.
 ///
 /// ```dart
 /// import 'package:just_zstd/just_zstd.dart';
 ///
-/// final decoder = ZstdDecoder();
-/// final decompressed = decoder.decode(compressedBytes);
+/// const decoder = ZstdDecoder();
+/// final decompressed = decoder.decode(compressedBytes, maxOutputSize: 4800);
 /// ```
 library;
 
-export 'src/zstd_decoder.dart';
-export 'src/zstd_encoder.dart';
-export 'src/bit_reader.dart';
-export 'src/fse_table.dart';
-export 'src/huffman_table.dart';
+export 'src/zstd_decoder.dart' show ZstdDecoder;
+export 'src/zstd_encoder.dart' show ZstdEncoder;

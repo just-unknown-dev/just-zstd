@@ -1,0 +1,352 @@
+{
+ "zstd": "1.5.7",
+ "frames": [
+  {
+   "file": "empty.zst",
+   "recipe": [],
+   "settings": {
+    "level": 3,
+    "checksum": 1
+   },
+   "size": 0
+  },
+  {
+   "file": "one_byte.zst",
+   "recipe": [
+    [
+     "fill",
+     1,
+     120
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1
+   },
+   "size": 1
+  },
+  {
+   "file": "text_1k_level1.zst",
+   "recipe": [
+    [
+     "text",
+     1000,
+     1
+    ]
+   ],
+   "settings": {
+    "level": 1
+   },
+   "size": 1000
+  },
+  {
+   "file": "text_1k_level19.zst",
+   "recipe": [
+    [
+     "text",
+     1000,
+     2
+    ]
+   ],
+   "settings": {
+    "level": 19,
+    "checksum": 1
+   },
+   "size": 1000
+  },
+  {
+   "file": "text_30k_level3.zst",
+   "recipe": [
+    [
+     "text",
+     30000,
+     3
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1
+   },
+   "size": 30000
+  },
+  {
+   "file": "text_30k_level22.zst",
+   "recipe": [
+    [
+     "text",
+     30000,
+     4
+    ]
+   ],
+   "settings": {
+    "level": 22,
+    "checksum": 1
+   },
+   "size": 30000
+  },
+  {
+   "file": "text_20k_fast.zst",
+   "recipe": [
+    [
+     "text",
+     20000,
+     5
+    ]
+   ],
+   "settings": {
+    "level": -5,
+    "checksum": 1
+   },
+   "size": 20000
+  },
+  {
+   "file": "tiles_64x64_level19.zst",
+   "recipe": [
+    [
+     "tiles",
+     64,
+     64,
+     6
+    ]
+   ],
+   "settings": {
+    "level": 19
+   },
+   "size": 16384
+  },
+  {
+   "file": "tiles_256x256_level3.zst",
+   "recipe": [
+    [
+     "tiles",
+     256,
+     256,
+     7
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1
+   },
+   "size": 262144
+  },
+  {
+   "file": "tiles_256x256_level19.zst",
+   "recipe": [
+    [
+     "tiles",
+     256,
+     256,
+     8
+    ]
+   ],
+   "settings": {
+    "level": 19,
+    "checksum": 1
+   },
+   "size": 262144
+  },
+  {
+   "file": "noise_5k.zst",
+   "recipe": [
+    [
+     "noise",
+     5000,
+     9
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1
+   },
+   "size": 5000
+  },
+  {
+   "file": "zeros_300k.zst",
+   "recipe": [
+    [
+     "fill",
+     300000,
+     0
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1
+   },
+   "size": 300000
+  },
+  {
+   "file": "mixed_blocks.zst",
+   "recipe": [
+    [
+     "noise",
+     3000,
+     10
+    ],
+    [
+     "text",
+     40000,
+     11
+    ],
+    [
+     "fill",
+     140000,
+     7
+    ],
+    [
+     "tiles",
+     100,
+     100,
+     12
+    ],
+    [
+     "again",
+     0
+    ]
+   ],
+   "settings": {
+    "level": 9,
+    "checksum": 1
+   },
+   "size": 226000
+  },
+  {
+   "file": "far_match.zst",
+   "recipe": [
+    [
+     "noise",
+     6000,
+     13
+    ],
+    [
+     "fill",
+     150000,
+     0
+    ],
+    [
+     "again",
+     0
+    ]
+   ],
+   "settings": {
+    "level": 19,
+    "checksum": 1,
+    "windowLog": 20
+   },
+   "size": 162000
+  },
+  {
+   "file": "no_content_size.zst",
+   "recipe": [
+    [
+     "text",
+     10000,
+     14
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1,
+    "contentSize": 0
+   },
+   "size": 10000
+  },
+  {
+   "file": "small_window.zst",
+   "recipe": [
+    [
+     "text",
+     50000,
+     15
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1,
+    "windowLog": 10
+   },
+   "size": 50000
+  },
+  {
+   "file": "no_checksum_large.zst",
+   "recipe": [
+    [
+     "tiles",
+     200,
+     200,
+     16
+    ]
+   ],
+   "settings": {
+    "level": 6
+   },
+   "size": 160000
+  },
+  {
+   "file": "rle_tables.zst",
+   "recipe": [
+    [
+     "runs",
+     200
+    ]
+   ],
+   "settings": {
+    "level": 1,
+    "checksum": 1
+   },
+   "size": 10200
+  },
+  {
+   "file": "literals_only.zst",
+   "recipe": [
+    [
+     "letters",
+     4000,
+     16,
+     22
+    ]
+   ],
+   "settings": {
+    "level": 3,
+    "checksum": 1
+   },
+   "size": 4000
+  },
+  {
+   "file": "rle_literals.zst",
+   "recipe": [
+    [
+     "slices",
+     21
+    ]
+   ],
+   "settings": {
+    "level": 19,
+    "checksum": 1,
+    "windowLog": 10
+   },
+   "size": 3360
+  }
+ ],
+ "concatenated": {
+  "file": "concatenated.zst",
+  "recipe": [
+   [
+    "text",
+    2000,
+    17
+   ],
+   [
+    "tiles",
+    32,
+    32,
+    18
+   ]
+  ]
+ },
+ "dictionary": {
+  "file": "needs_dictionary.zst",
+  "dictId": 936059108
+ }
+}
